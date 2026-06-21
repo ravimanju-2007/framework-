@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mini Framework Level 8 (Priority Fiber)</title>
+</head>
+
+<body>
+
+<div id="root"></div>
+
+<script>
+
+/* ---------------- createElement ---------------- */
+function createElement(type, props, ...children){
+    return {
+        type,
+        props: {
+            ...props,
+            children: children.flat()
+        }
+    };
+}
+
+/* ---------------- GLOBAL STATE ---------------- */
+let hooks = [];
+let hookIndex = 0;
+
+let AppRef = null;
+let RootRef = null;
+
+/* ---------------- FIBER CORE ---------------- */
+let wipRoot = null;
+let currentRoot = null;
+let nextUnitOfWork = null;
+
+/* ---------------- PRIORITY SYSTEM (LEVEL 8 CORE) ---------------- */
+const PRIORITY = {
+    HIGH: 1,
+    NORMAL: 2,
+    LOW: 3
+};
+
+let updateQueue = [];
+
+/* ---------------- SCHEDULE WITH PRIORITY ---------------- */
+function scheduleUpdate(priority = PRIORITY.NORMAL){
+
+    updateQueue.push(priority);
+
+    updateQueue.sort((a, b) => a - b);
+
+    if (!nextUnitOfWork){
+        requestIdleCallback(workLoop);
+    }
+}
+
+/* ---------------- WORK LOOP (INTERRUPTIBLE) ---------------- */
+function workLoop(deadline){
+
+    let shouldYield = false;
+
+    while (nextUnitOfWork && !shouldYield){
+
+        nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
+
+        shouldYield = deadline.timeRemaining() < 1;
+    }
+
+    if (!nextUnitOfWork && wipRoot){
+        commitRoot();
+    }
+
+    if (nextUnitOfWork){
+        requestIdleCallback(workLoop);
+    }
+}
+
+/* ---------------- UNIT OF WORK ---------------- */
+function performUnitOfWork(fiber){
+
+    const isFunction = typeof fiber.type === "function";
+
+    if (isFunction){
+        updateFunctionComponent(fiber);
+    } else {
+        updateHostComponent(fiber);
+    }
+
+    if (fiber.child){
+        return fiber.child;
+    }
+
+    let next = fiber;
+
+    while (next){
+        if (next.sibling){
+            return next.sibling;
+        }
+        next = next.parent;
+    }
+
+    return null;
+}
+
+/* ---------------- FUNCTION COMPONENT ---------------- */
+function updateFunctionComponent(fiber){
+    hookIndex = 0;
+    const children = [fiber.type(fiber.props)];
+    reconcileChildren(fiber, children);
+}
+
+/* ---------------- HOST COMPONENT ---------------- */
+function updateHostComponent(fiber){
+
+    if (!fiber.dom){
+        fiber.dom = document.createElement(fiber.type);
+    }
+
+    reconcileChildren(fiber, fiber.props?.children || []);
+}
+
+/* ---------------- RECONCILER ---------------- */
+function reconcileChildren(parentFiber, elements){
+
+    let index = 0;
+    let prevSibling = null;
+
+    while (index < elements.length){
+
+        const element = elements[index];
+
+        const newFiber = {
+            type: element.type,
+            props: element.props,
+            parent: parentFiber,
+            dom: null,
+            alternate: null,
+            effectTag: "PLACEMENT"
+        };
+
+        if (index === 0){
+            parentFiber.child = newFiber;
+        } else {
+            prevSibling.sibling = newFiber;
+        }
+
+        prevSibling = newFiber;
+        index++;
+    }
+}
+
+/* ---------------- COMMIT ---------------- */
+function commitRoot(){
+    commitWork(wipRoot.child);
+    currentRoot = wipRoot;
+    wipRoot = null;
+}
+
+/* ---------------- DOM COMMIT ---------------- */
+function commitWork(fiber){
+
+    if (!fiber) return;
+
+    const domParent = fiber.parent.dom;
+
+    if (fiber.effectTag === "PLACEMENT" && fiber.dom){
+        domParent.appendChild(fiber.dom);
+    }
+
+    commitWork(fiber.child);
+    commitWork(fiber.sibling);
+}
+
+/* ---------------- useState ---------------- */
+function useState(initial){
+
+    const oldHook =
+        currentRoot?.alternate?.hooks?.[hookIndex];
+
+    const hook = {
+        state: oldHook ? oldHook.state : initial
+    };
+
+    function setState(value){
+
+        hook.state = value;
+
+        // LEVEL 8: high priority for user interactions
+        scheduleUpdate(PRIORITY.HIGH);
+    }
+
+    if (!currentRoot?.hooks){
+        currentRoot = { hooks: [] };
+    }
+
+    currentRoot.hooks.push(hook);
+
+    hookIndex++;
+
+    return [hook.state, setState];
+}
+
+/* ---------------- useEffect ---------------- */
+function useEffect(fn, deps){
+    queueMicrotask(fn);
+}
+
+/* ---------------- RENDER ---------------- */
+function render(){
+
+    hookIndex = 0;
+
+    wipRoot = {
+        dom: RootRef,
+        props: {
+            children: [AppRef()]
+        },
+        alternate: currentRoot
+    };
+
+    nextUnitOfWork = wipRoot;
+
+    requestIdleCallback(workLoop);
+}
+
+/* ---------------- START ---------------- */
+function start(App, root){
+    AppRef = App;
+    RootRef = root;
+    scheduleUpdate(PRIORITY.NORMAL);
+}
+
+/* ---------------- APP ---------------- */
+function App(){
+    return createElement(
+        "div",
+        null,
+        createElement("h1", null, "LEVEL 8 🚀 Priority Fiber"),
+        createElement(Counter, null)
+    );
+}
+
+/* ---------------- COUNTER ---------------- */
+function Counter(){
+
+    const [count, setCount] = useState(0);
+
+    return createElement(
+        "div",
+        null,
+        createElement("h2", null, `Count: ${count}`),
+        createElement(
+            "button",
+            {
+                onClick: () => {
+                    setCount(count + 1);
+                }
+            },
+            "Increase (Priority Update)"
+        )
+    );
+}
+
+/* ---------------- BOOT ---------------- */
+start(App, document.getElementById("root"));
+
+</script>
+
+</body>
+</html>
